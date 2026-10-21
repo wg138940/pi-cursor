@@ -45,6 +45,12 @@ export interface BridgeHandle {
   openStream?(accessToken: string): void;
   /** Fires when a persistent bridge reports the current stream ended. */
   onStreamDone?(cb: () => void): void;
+  /**
+   * Drop the transport socket from the event loop while the bridge is parked so
+   * an idle connection never pins the process; `ref()` restores it on reuse.
+   */
+  unref?(): void;
+  ref?(): void;
 }
 
 export type BridgeFactory = (options: SpawnBridgeOptions) => BridgeHandle;

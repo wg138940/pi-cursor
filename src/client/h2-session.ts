@@ -425,6 +425,14 @@ export function createBridgeHandleForSession(
     end() {
       safeEnd();
     },
+    unref() {
+      const socket = (session as unknown as { socket?: { unref?: () => void } }).socket;
+      socket?.unref?.();
+    },
+    ref() {
+      const socket = (session as unknown as { socket?: { ref?: () => void } }).socket;
+      socket?.ref?.();
+    },
     onData(cb: (chunk: Buffer) => void) {
       cbs.data = cb;
       while (queuedData.length > 0 && !exited) {
@@ -548,6 +556,12 @@ function createProxiedBridge(
     end() {
       ended = true;
       inner?.end();
+    },
+    unref() {
+      inner?.unref?.();
+    },
+    ref() {
+      inner?.ref?.();
     },
     onData(cb) {
       onDataCb = cb;

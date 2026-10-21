@@ -55,9 +55,18 @@ export function removeActiveBridge(bridgeKey: string): void {
   activeBridges.delete(bridgeKey);
 }
 
+export interface IdleBridgeScope {
+  sessionScoped: boolean;
+  sessionId?: string;
+}
+
 export const idleBridges = new Map<
   string,
-  { bridge: BridgeHandle; idleTimer: ReturnType<typeof setTimeout> }
+  {
+    bridge: BridgeHandle;
+    idleTimer: ReturnType<typeof setTimeout>;
+    scope?: IdleBridgeScope;
+  }
 >();
 
 function canReuseBridge(bridge: BridgeHandle): boolean {
@@ -76,8 +85,26 @@ export function destroyAllIdleBridges(): void {
   for (const key of [...idleBridges.keys()]) destroyIdleBridge(key);
 }
 
-/** Keep a live HTTP/2 child around so the next user turn can skip spawn + TLS. */
-export function parkIdleBridge(bridgeKey: string, bridge: BridgeHandle): void {
+/** Destroy parked bridges matching `predicate` (session-bound or orphaned ones). */
+export function destroyIdleBridgesWhere(
+  predicate: (scope: IdleBridgeScope | undefined) => boolean,
+): number {
+  let destroyed = 0;
+  for (const [key, idle] of [...idleBridges.entries()]) {
+    if (predicate(idle.scope)) {
+      destroyIdleBridge(key);
+      destroyed += 1;
+    }
+  }
+  return destroyed;
+}
+
+/** Keep a live HTTP/2 connection around so the next user turn can skip TLS. */
+export function parkIdleBridge(
+  bridgeKey: string,
+  bridge: BridgeHandle,
+  scope?: IdleBridgeScope,
+): void {
   // Drop the active-registry entry without killing the process — the leftover-turn
   // path in native-core ends any bridge still listed as active.
   removeActiveBridge(bridgeKey);
@@ -92,7 +119,8 @@ export function parkIdleBridge(bridgeKey: string, bridge: BridgeHandle): void {
     destroyIdleBridge(bridgeKey);
   }, ACTIVE_BRIDGE_TTL_MS);
   idleTimer.unref?.();
-  idleBridges.set(bridgeKey, { bridge, idleTimer });
+  bridge.unref?.();
+  idleBridges.set(bridgeKey, { bridge, idleTimer, scope });
 }
 
 function takeIdleBridge(bridgeKey: string): BridgeHandle | undefined {
@@ -100,6 +128,7 @@ function takeIdleBridge(bridgeKey: string): BridgeHandle | undefined {
   if (!idle) return undefined;
   idleBridges.delete(bridgeKey);
   clearTimeout(idle.idleTimer);
+  idle.bridge.ref?.();
   if (!canReuseBridge(idle.bridge)) {
     if (idle.bridge.alive) idle.bridge.end();
     return undefined;
