@@ -200,6 +200,14 @@ export interface StoredConversation {
   checkpointSource?: "upstream" | "absent";
   checkpointTurnCount?: number;
   checkpointHistoryFingerprint?: string;
+  /**
+   * Message count + fingerprint of the last request seen on this conversation. A
+   * shorter or divergent prefix means the client rewrote history (compaction,
+   * context edits), so the published conversation is stale even when the
+   * completed-turn fingerprints match (single-turn tool loops parse to zero turns).
+   */
+  lastRequestMessageCount?: number;
+  lastRequestMessageFingerprint?: string;
   midPausePendingToolCalls?: Array<{ toolCallId: string; toolName: string }>;
   midPauseTurnCount?: number;
   midPauseHistoryFingerprint?: string;

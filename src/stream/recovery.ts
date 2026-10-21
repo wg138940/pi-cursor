@@ -240,6 +240,13 @@ export function fingerprintCompletedTurns(turns: ParsedTurn[]): string {
   return createHash("sha256").update(combined).digest("hex");
 }
 
+/** Fingerprint of a raw request message list; detects client-side history rewrites. */
+export function fingerprintRequestMessages(
+  messages: Array<{ role: string; content?: unknown }>,
+): string {
+  const combined = messages.map((m) => JSON.stringify([m.role, m.content ?? null])).join(",");
+  return createHash("sha256").update(combined).digest("hex");
+}
 export function clearStoredMidPauseMetadata(stored: StoredConversation): void {
   delete stored.midPausePendingToolCalls;
   delete stored.midPauseTurnCount;

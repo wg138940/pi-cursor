@@ -21,12 +21,14 @@ import {
   cleanupBridge,
   destroyAllIdleBridges,
   destroyIdleBridge,
+  destroyIdleBridgesWhere,
 } from "./bridge-session.js";
 import { debugLog } from "./debug-log.js";
 import { textContent } from "./message-parsing.js";
 import {
   clearStoredMidPauseMetadata as clearStoredMidPauseMetadataImpl,
   fingerprintCompletedTurns as fingerprintCompletedTurnsImpl,
+  fingerprintRequestMessages,
 } from "./recovery.js";
 import {
   deleteConversationJournal,
@@ -159,12 +161,75 @@ function checkpointDecodes(checkpoint: Uint8Array): boolean {
   }
 }
 
+/**
+ * Tracks the raw request-message history of a conversation and detects client-side
+ * rewrites (compaction, context edits). Returns true when the incoming messages are
+ * not a plain extension of the previous request's — meaning any published Cursor
+ * conversation holds content the client has discarded. A rewrite with a live
+ * checkpoint clears it and rotates `conversationId` so the next publish rebuilds
+ * from Pi's (possibly summarized) transcript instead of replaying stale history.
+ */
+export function trackRequestHistory(
+  stored: StoredConversation | undefined,
+  requestMessages: Array<{ role: string; content?: unknown }> | undefined,
+  requestId: string,
+  convKey: string,
+): boolean {
+  if (!stored || !requestMessages) return false;
+  let rewritten = false;
+  if (stored.lastRequestMessageFingerprint !== undefined) {
+    const previousCount = stored.lastRequestMessageCount ?? 0;
+    rewritten =
+      requestMessages.length < previousCount ||
+      fingerprintRequestMessages(requestMessages.slice(0, previousCount)) !==
+        stored.lastRequestMessageFingerprint;
+    if (rewritten) {
+      debugLog("chat.history_rewrite_detected", {
+        requestId,
+        convKey,
+        previousCount,
+        currentCount: requestMessages.length,
+        hadCheckpoint: !!stored.checkpoint,
+      });
+      if (stored.checkpoint) {
+        clearStoredCheckpoint(stored, true);
+        stored.conversationId = randomUUID();
+        debugLog("conversation.rotated", {
+          requestId,
+          convKey,
+          reason: "history_rewrite_detected",
+          conversationId: stored.conversationId,
+        });
+        persistJournal(convKey, stored);
+      }
+    }
+  }
+  stored.lastRequestMessageCount = requestMessages.length;
+  stored.lastRequestMessageFingerprint = fingerprintRequestMessages(requestMessages);
+  return rewritten;
+}
+
 export function discardStaleCheckpointIfNeeded(
   stored: StoredConversation,
   turns: ParsedTurn[],
   requestId: string,
   convKey: string,
+  requestMessages?: Array<{ role: string; content?: unknown }>,
 ): void {
+  debugLog("chat.stale_check_enter", {
+    requestId,
+    convKey,
+    hasRequestMessages: !!requestMessages,
+    messageCount: requestMessages?.length,
+    prevCount: stored.lastRequestMessageCount,
+    hasPrevFingerprint: !!stored.lastRequestMessageFingerprint,
+    hasCheckpoint: !!stored.checkpoint,
+  });
+  // Client-side history rewrites (compaction, context edits) leave the completed-turn
+  // comparison vacuous — a single-turn tool loop parses to zero turns before and after
+  // — so detect them from the raw request messages: a shorter or divergent prefix means
+  // the published conversation no longer matches the client's history.
+  trackRequestHistory(stored, requestMessages, requestId, convKey);
   // Tier 2 extends staleness validation to metadata-only mid-pause snapshots.
   if (!stored.checkpoint) return;
 
@@ -534,6 +599,10 @@ export function cleanupSessionState(sessionId?: string): void {
   });
   if (active) cleanupBridge(active.bridge, active.heartbeatTimer, bridgeKey);
   destroyIdleBridge(bridgeKey);
+  // Companion conversations (compaction summaries) park bridges under content-derived
+  // keys with no session binding; without this sweep their sockets keep the process
+  // alive after the session is gone.
+  destroyIdleBridgesWhere((scope) => !scope?.sessionScoped || scope.sessionId === sessionId);
   // Drop the in-memory copy so a long-lived process cannot pin a large blob store
   // after the user switched away. The journal stays so /resume can hydrate.
   conversationStates.delete(convKey);

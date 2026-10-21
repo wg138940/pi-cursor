@@ -57,6 +57,7 @@ import {
   deriveRequestLockKey,
   deterministicConversationId,
   discardStaleCheckpointIfNeeded,
+  trackRequestHistory,
   evictStaleConversations,
   fingerprintCompletedTurns,
   getOrHydrateConversation,
@@ -506,6 +507,18 @@ async function handleCursorNativeRequest(
   const bridgeKey = deriveBridgeKey(body.messages, sessionId);
   const convKey = deriveConversationKey(body.messages, sessionId);
   const activeBridge = activeBridges.get(bridgeKey);
+  debugLog("chat.request_parsed", {
+    requestId,
+    sessionId,
+    convKey,
+    messages: body.messages.length,
+    turnCount: turns.length,
+    toolResults: toolResults.length,
+    inFlightTurn: !!inFlightTurn,
+    systemChars: systemPrompt.length,
+    userChars: userText.length,
+    historyFingerprint: fingerprintCompletedTurns(turns),
+  });
 
   debugLog("native.request", {
     requestId,
@@ -533,6 +546,16 @@ async function handleCursorNativeRequest(
   }
 
   if (toolResults.length > 0) {
+    // Compaction/context edits rewrite history mid-turn; detect them from the raw
+    // request messages (completed-turn fingerprints are vacuous in single-turn tool
+    // loops) so the resume path tears down instead of splicing tool results into a
+    // conversation that still holds discarded content.
+    const historyRewritten = trackRequestHistory(
+      getOrHydrateConversation(convKey),
+      body.messages,
+      requestId,
+      convKey,
+    );
     const resumeIdleTimeoutMs = resolveResumeIdleTimeoutMs(
       process.env.PI_CURSOR_RESUME_IDLE_TIMEOUT_MS,
     );
@@ -548,7 +571,8 @@ async function handleCursorNativeRequest(
       // reshapes its history mid-turn — with no collision to protect against.
       const currentHistoryFingerprint = fingerprintCompletedTurns(turns);
       const historyMatches =
-        !!sessionId || activeBridge.historyFingerprint === currentHistoryFingerprint;
+        !historyRewritten &&
+        (!!sessionId || activeBridge.historyFingerprint === currentHistoryFingerprint);
       if (!historyMatches) {
         debugLog("bridge.active_history_mismatch", {
           requestId,
@@ -758,7 +782,7 @@ async function handleCursorNativeRequest(
   }
   stored.lastAccessMs = Date.now();
   evictStaleConversations();
-  discardStaleCheckpointIfNeeded(stored, turns, requestId, convKey);
+  discardStaleCheckpointIfNeeded(stored, turns, requestId, convKey, body.messages);
 
   const mcpTools = buildMcpToolDefinitions(selectedTools);
   const effectiveUserText = userText;
@@ -1188,7 +1212,10 @@ function writeNativeStream(
       }
     }
     writer.done("stop", state);
-    parkIdleBridge(bridgeKey, bridge);
+    parkIdleBridge(bridgeKey, bridge, {
+      sessionScoped: !!stored?.sessionScoped,
+      sessionId: stored?.sessionId,
+    });
   };
   bridge.onStreamDone?.(finalizeSuccessfulStream);
 

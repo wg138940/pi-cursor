@@ -53,6 +53,8 @@ export interface DurableJournalRecord {
   checkpointSource?: "upstream" | "absent";
   checkpointTurnCount?: number;
   checkpointHistoryFingerprint?: string;
+  lastRequestMessageCount?: number;
+  lastRequestMessageFingerprint?: string;
   midPausePendingToolCalls?: Array<{ toolCallId: string; toolName: string }>;
   midPauseTurnCount?: number;
   midPauseHistoryFingerprint?: string;
@@ -258,6 +260,12 @@ export function serializeConversationJournal(
     ...(stored.midPauseRecordedAtMs !== undefined
       ? { midPauseRecordedAtMs: stored.midPauseRecordedAtMs }
       : {}),
+    ...(stored.lastRequestMessageCount !== undefined
+      ? { lastRequestMessageCount: stored.lastRequestMessageCount }
+      : {}),
+    ...(stored.lastRequestMessageFingerprint
+      ? { lastRequestMessageFingerprint: stored.lastRequestMessageFingerprint }
+      : {}),
     blobs: entries,
     ...(omitted > 0 ? { blobsOmitted: omitted } : {}),
     lastAccessMs: stored.lastAccessMs || now,
@@ -330,6 +338,12 @@ export function deserializeConversationJournal(
       : {}),
     ...(record.midPauseRecordedAtMs !== undefined
       ? { midPauseRecordedAtMs: record.midPauseRecordedAtMs }
+      : {}),
+    ...(record.lastRequestMessageCount !== undefined
+      ? { lastRequestMessageCount: record.lastRequestMessageCount }
+      : {}),
+    ...(record.lastRequestMessageFingerprint
+      ? { lastRequestMessageFingerprint: record.lastRequestMessageFingerprint }
       : {}),
     sessionScoped: !!record.sessionScoped,
     ...(record.sessionId ? { sessionId: record.sessionId } : {}),
